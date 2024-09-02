@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"log"
 
 	"github.com/dgraph-io/badger/v3"
 
@@ -27,8 +29,18 @@ func (app *KVStoreApplication) Query(_ context.Context, req *abcitypes.RequestQu
 	return &abcitypes.ResponseQuery{}, nil
 }
 
+func (app *KVStoreApplication) isValid(tx []byte) uint32 {
+	// check format
+	parts := bytes.Split(tx, []byte("="))
+	if len(parts) != 2 {
+		return 1
+	}
+	return 0
+}
+
 func (app *KVStoreApplication) CheckTx(_ context.Context, check *abcitypes.RequestCheckTx) (*abcitypes.ResponseCheckTx, error) {
-	return &abcitypes.ResponseCheckTx{}, nil
+	code := app.isValid(check.Tx)
+	return &abcitypes.ResponseCheckTx{Code: code}, nil
 }
 
 func (app *KVStoreApplication) InitChain(_ context.Context, chain *abcitypes.RequestInitChain) (*abcitypes.ResponseInitChain, error) {
@@ -44,11 +56,35 @@ func (app *KVStoreApplication) ProcessProposal(_ context.Context, proposal *abci
 }
 
 func (app *KVStoreApplication) FinalizeBlock(_ context.Context, req *abcitypes.RequestFinalizeBlock) (*abcitypes.ResponseFinalizeBlock, error) {
-	return &abcitypes.ResponseFinalizeBlock{}, nil
+	var txs = make([]*abcitypes.ExecTxResult, len(req.Txs))
+
+	app.onGoingBlock = app.db.NewTransaction(true)
+	for i, tx := range req.Txs {
+		if code := app.isValid(tx); code != 0 {
+			log.Printf("Error: invalid transaction index %v", i)
+			txs[i] = &abcitypes.ExecTxResult{Code: code}
+		} else {
+			parts := bytes.SplitN(tx, []byte("="), 2)
+			key, value := parts[0], parts[1]
+			log.Printf("Adding key %s with value %s", key, value)
+
+			if err := app.onGoingBlock.Set(key, value); err != nil {
+				log.Panicf("Error writing to database, unable to execute tx: %v", err)
+			}
+
+			log.Printf("Successfully added key %s with value %s", key, value)
+
+			txs[i] = &abcitypes.ExecTxResult{}
+		}
+	}
+
+	return &abcitypes.ResponseFinalizeBlock{
+		TxResults: txs,
+	}, nil
 }
 
 func (app KVStoreApplication) Commit(_ context.Context, commit *abcitypes.RequestCommit) (*abcitypes.ResponseCommit, error) {
-	return &abcitypes.ResponseCommit{}, nil
+	return &abcitypes.ResponseCommit{}, app.onGoingBlock.Commit()
 }
 
 func (app *KVStoreApplication) ListSnapshots(_ context.Context, snapshots *abcitypes.RequestListSnapshots) (*abcitypes.ResponseListSnapshots, error) {
