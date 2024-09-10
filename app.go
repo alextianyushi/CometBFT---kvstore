@@ -26,7 +26,28 @@ func (app *KVStoreApplication) Info(_ context.Context, info *abcitypes.RequestIn
 }
 
 func (app *KVStoreApplication) Query(_ context.Context, req *abcitypes.RequestQuery) (*abcitypes.ResponseQuery, error) {
-	return &abcitypes.ResponseQuery{}, nil
+	resp := abcitypes.ResponseQuery{Key: req.Data}
+
+	dbErr := app.db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get(req.Data)
+		if err != nil {
+			if err != badger.ErrKeyNotFound {
+				return err
+			}
+			resp.Log = "key does not exist"
+			return nil
+		}
+
+		return item.Value(func(val []byte) error {
+			resp.Log = "exists"
+			resp.Value = val
+			return nil
+		})
+	})
+	if dbErr != nil {
+		log.Panicf("Error reading database, unable to execute query: %v", dbErr)
+	}
+	return &resp, nil
 }
 
 func (app *KVStoreApplication) isValid(tx []byte) uint32 {
@@ -48,11 +69,11 @@ func (app *KVStoreApplication) InitChain(_ context.Context, chain *abcitypes.Req
 }
 
 func (app *KVStoreApplication) PrepareProposal(_ context.Context, proposal *abcitypes.RequestPrepareProposal) (*abcitypes.ResponsePrepareProposal, error) {
-	return &abcitypes.ResponsePrepareProposal{}, nil
+	return &abcitypes.ResponsePrepareProposal{Txs: proposal.Txs}, nil
 }
 
 func (app *KVStoreApplication) ProcessProposal(_ context.Context, proposal *abcitypes.RequestProcessProposal) (*abcitypes.ResponseProcessProposal, error) {
-	return &abcitypes.ResponseProcessProposal{}, nil
+	return &abcitypes.ResponseProcessProposal{Status: abcitypes.ResponseProcessProposal_ACCEPT}, nil
 }
 
 func (app *KVStoreApplication) FinalizeBlock(_ context.Context, req *abcitypes.RequestFinalizeBlock) (*abcitypes.ResponseFinalizeBlock, error) {
